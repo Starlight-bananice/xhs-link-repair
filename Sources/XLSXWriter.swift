@@ -28,18 +28,20 @@ enum XLSXWriterError: LocalizedError {
 }
 
 enum XLSXWriter {
-    static func makeDefaultOutputURL() throws -> URL {
-        guard let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first else {
-            throw XLSXWriterError.noDesktopDirectory
-        }
-        let directory = desktop.appendingPathComponent("小红书链接转换结果", isDirectory: true)
+    static func makeOutputURL(in directory: URL, at date: Date = Date()) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let stamp = formatter.string(from: Date())
-        return directory.appendingPathComponent("\(stamp)_小红书链接转换结果.xlsx")
+        let stamp = formatter.string(from: date)
+        var sequence = 1
+        var candidate: URL
+        repeat {
+            let suffix = sequence == 1 ? "" : "_\(sequence)"
+            candidate = directory.appendingPathComponent("\(stamp)\(suffix)_小红书链接转换结果.xlsx")
+            sequence += 1
+        } while FileManager.default.fileExists(atPath: candidate.path)
+        return candidate
     }
 
     static func write(rows: [SpreadsheetExportRow], to destinationURL: URL) throws {

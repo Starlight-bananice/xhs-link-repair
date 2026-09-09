@@ -52,7 +52,7 @@ private func runSelfTests() -> Int32 {
         return 1
     }
 
-    guard runAutomationSafetyTests() else { return 1 }
+    guard runAutomationSafetyTests(), runExportSettingsTests() else { return 1 }
     print("SELF-TEST PASSED")
     return 0
 }
@@ -106,6 +106,8 @@ private enum BatchOutcome {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let runner = AutomationRunner()
     private let intervalBetweenItems: TimeInterval = 2.0
+    private let exportSettings = ExportSettings()
+    private var historyController: HistoryWindowController?
 
     private var window: NSWindow!
     private var inputTextView: NSTextView!
@@ -113,7 +115,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusLabel: NSTextField!
     private var runButton: NSButton!
     private var stopButton: NSButton!
-    private var copyButton: NSButton!
+    private var folderButton: NSButton!
+    private var historyButton: NSButton!
+    private var folderLabel: NSTextField!
     private var excelButton: NSButton!
     private var coordinateCheckbox: NSButton!
 
@@ -138,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func buildWindow() {
-        let contentSize = NSSize(width: 760, height: 680)
+        let contentSize = NSSize(width: 760, height: 720)
         window = NSWindow(
             contentRect: NSRect(origin: .zero, size: contentSize),
             styleMask: [.titled, .closable, .miniaturizable],
@@ -152,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let content = window.contentView else { return }
 
         let title = label("批量生成浏览器可打开的小红书链接", size: 22, weight: .semibold)
-        title.frame = NSRect(x: 28, y: 620, width: 704, height: 32)
+        title.frame = NSRect(x: 28, y: 660, width: 704, height: 32)
         content.addSubview(title)
 
         let subtitle = label(
@@ -160,14 +164,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             size: 13,
             color: .secondaryLabelColor
         )
-        subtitle.frame = NSRect(x: 28, y: 590, width: 704, height: 24)
+        subtitle.frame = NSRect(x: 28, y: 630, width: 704, height: 24)
         content.addSubview(subtitle)
 
         let inputTitle = label("原始链接或笔记 ID", size: 13, weight: .medium)
-        inputTitle.frame = NSRect(x: 28, y: 554, width: 260, height: 20)
+        inputTitle.frame = NSRect(x: 28, y: 594, width: 260, height: 20)
         content.addSubview(inputTitle)
 
-        let input = makeTextArea(frame: NSRect(x: 28, y: 362, width: 704, height: 184), editable: true)
+        let input = makeTextArea(frame: NSRect(x: 28, y: 402, width: 704, height: 184), editable: true)
         inputTextView = input.textView
         content.addSubview(input.scrollView)
 
@@ -176,34 +180,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             target: nil,
             action: nil
         )
-        coordinateCheckbox.frame = NSRect(x: 28, y: 326, width: 520, height: 24)
+        coordinateCheckbox.frame = NSRect(x: 28, y: 366, width: 520, height: 24)
         coordinateCheckbox.state = .on
         content.addSubview(coordinateCheckbox)
 
         runButton = NSButton(title: "开始批量转换", target: self, action: #selector(startBatch))
-        runButton.frame = NSRect(x: 28, y: 274, width: 190, height: 38)
+        runButton.frame = NSRect(x: 28, y: 314, width: 190, height: 38)
         runButton.bezelStyle = .rounded
         runButton.keyEquivalent = "\r"
         content.addSubview(runButton)
 
         stopButton = NSButton(title: "停止", target: self, action: #selector(stopBatch))
-        stopButton.frame = NSRect(x: 230, y: 274, width: 90, height: 38)
+        stopButton.frame = NSRect(x: 230, y: 314, width: 90, height: 38)
         stopButton.isEnabled = false
         content.addSubview(stopButton)
 
         statusLabel = label("就绪", size: 13, color: .secondaryLabelColor)
-        statusLabel.frame = NSRect(x: 338, y: 280, width: 394, height: 24)
+        statusLabel.frame = NSRect(x: 338, y: 320, width: 394, height: 24)
         statusLabel.lineBreakMode = .byTruncatingTail
         content.addSubview(statusLabel)
+
+        let folderTitle = label("Excel 保存到", size: 12, color: .secondaryLabelColor)
+        folderTitle.frame = NSRect(x: 28, y: 276, width: 90, height: 22)
+        content.addSubview(folderTitle)
+        folderLabel = label("", size: 12, color: .secondaryLabelColor)
+        folderLabel.frame = NSRect(x: 122, y: 276, width: 470, height: 22)
+        folderLabel.lineBreakMode = .byTruncatingMiddle
+        content.addSubview(folderLabel)
+        folderButton = NSButton(title: "选择保存位置…", target: self, action: #selector(chooseExportDirectory))
+        folderButton.frame = NSRect(x: 604, y: 270, width: 128, height: 32)
+        content.addSubview(folderButton)
+        updateFolderLabel()
 
         let outputTitle = label("转换结果", size: 13, weight: .medium)
         outputTitle.frame = NSRect(x: 28, y: 238, width: 180, height: 20)
         content.addSubview(outputTitle)
 
-        copyButton = NSButton(title: "复制成功链接", target: self, action: #selector(copySuccessfulResults))
-        copyButton.frame = NSRect(x: 382, y: 232, width: 160, height: 30)
-        copyButton.isEnabled = false
-        content.addSubview(copyButton)
+        historyButton = NSButton(title: "查看历史记录", target: self, action: #selector(showHistory))
+        historyButton.frame = NSRect(x: 402, y: 232, width: 140, height: 30)
+        content.addSubview(historyButton)
 
         excelButton = NSButton(title: "打开 Excel", target: self, action: #selector(openLastExcel))
         excelButton.frame = NSRect(x: 552, y: 232, width: 180, height: 30)
@@ -278,6 +293,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        do {
+            try exportSettings.prepareDirectory()
+        } catch {
+            statusLabel.textColor = .systemRed
+            statusLabel.stringValue = "保存文件夹不可用，请重新选择保存位置"
+            let alert = NSAlert()
+            alert.messageText = "无法使用当前保存位置"
+            alert.informativeText = error.localizedDescription
+            alert.beginSheetModal(for: window)
+            return
+        }
         retryCount = 0
         batchItems = items
         batchIndex = 0
@@ -287,7 +313,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         outputTextView.string = ""
         runButton.isEnabled = false
         stopButton.isEnabled = true
-        copyButton.isEnabled = false
+        folderButton.isEnabled = false
+        historyButton.isEnabled = false
         excelButton.isEnabled = false
         lastExcelURL = nil
         statusLabel.textColor = .secondaryLabelColor
@@ -379,7 +406,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runButton.isEnabled = true
         stopButton.isEnabled = false
 
-        let successes = successfulURLs()
+        let successes = outcomes.filter {
+            if case .success(_, _, true) = $0 { return true }
+            return false
+        }
         let deleted = outcomes.filter {
             if case .deleted = $0 { return true }
             return false
@@ -389,19 +419,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return false
         }.count
         let failures = outcomes.count - successes.count - deleted - pending
-        copyButton.isEnabled = !successes.isEmpty
-
-        if !successes.isEmpty {
-            writeSuccessfulURLsToPasteboard(successes)
-        }
+        folderButton.isEnabled = true
+        historyButton.isEnabled = true
 
         var excelError: Error?
         if !outcomes.isEmpty {
             do {
-                let url = try XLSXWriter.makeDefaultOutputURL()
+                let url = try XLSXWriter.makeOutputURL(in: exportSettings.directory)
                 try XLSXWriter.write(rows: spreadsheetRows(), to: url)
                 lastExcelURL = url
                 excelButton.isEnabled = true
+                historyController?.reloadHistory()
             } catch {
                 excelError = error
             }
@@ -443,13 +471,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         outputTextView.scrollToEndOfDocument(nil)
     }
 
-    private func successfulURLs() -> [URL] {
-        outcomes.compactMap { outcome in
-            if case .success(_, let url, true) = outcome { return url }
-            return nil
-        }
-    }
-
     private func spreadsheetRows() -> [SpreadsheetExportRow] {
         outcomes.enumerated().map { offset, outcome in
             switch outcome {
@@ -487,21 +508,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func writeSuccessfulURLsToPasteboard(_ urls: [URL]) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(
-            urls.map(\.absoluteString).joined(separator: "\n"),
-            forType: .string
-        )
+    private func updateFolderLabel() {
+        folderLabel.stringValue = (exportSettings.directory.path as NSString).abbreviatingWithTildeInPath
+        folderLabel.toolTip = exportSettings.directory.path
     }
 
-    @objc private func copySuccessfulResults() {
-        let urls = successfulURLs()
-        guard !urls.isEmpty else { return }
-        writeSuccessfulURLsToPasteboard(urls)
-        statusLabel.textColor = .systemGreen
-        statusLabel.stringValue = "已复制 \(urls.count) 条成功链接"
+    @objc private func chooseExportDirectory() {
+        guard !batchRunning else { return }
+        let panel = NSOpenPanel()
+        panel.title = "选择 Excel 保存文件夹"
+        panel.message = "之后的转换结果会自动保存到此文件夹；以前的报告仍可从历史记录查看。"
+        panel.prompt = "选择此文件夹"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = exportSettings.directory
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            self.exportSettings.selectDirectory(url)
+            self.updateFolderLabel()
+            self.historyController?.reloadHistory()
+        }
+    }
+
+    @objc private func showHistory() {
+        guard !batchRunning else { return }
+        if historyController == nil { historyController = HistoryWindowController(settings: exportSettings) }
+        historyController?.reloadHistory()
+        historyController?.showWindow(nil)
+        historyController?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func openLastExcel() {
