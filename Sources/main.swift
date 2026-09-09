@@ -3,10 +3,10 @@ import Foundation
 
 private func runSelfTests() -> Int32 {
     let cases: [(String, String?)] = [
-        ("https://www.xiaohongshu.com/discovery/item/000000000000000000000001", "000000000000000000000001"),
-        ("https://www.xiaohongshu.com/explore/000000000000000000000002", "000000000000000000000002"),
-        ("xhsdiscover://item/000000000000000000000003", "000000000000000000000003"),
-        ("000000000000000000000004", "000000000000000000000004"),
+        ("https://www.xiaohongshu.com/discovery/item/f00000000000000000000001", "f00000000000000000000001"),
+        ("https://www.xiaohongshu.com/explore/f00000000000000000000002", "f00000000000000000000002"),
+        ("xhsdiscover://item/f00000000000000000000003", "f00000000000000000000003"),
+        ("F00000000000000000000004", "f00000000000000000000004"),
         ("not a link", nil)
     ]
     for (input, expected) in cases {
@@ -18,15 +18,15 @@ private func runSelfTests() -> Int32 {
     }
 
     let batchInput = """
-    https://www.xiaohongshu.com/discovery/item/000000000000000000000001
-    https://www.xiaohongshu.com/discovery/item/000000000000000000000002
-    https://www.xiaohongshu.com/discovery/item/000000000000000000000001
-    000000000000000000000004
+    https://www.xiaohongshu.com/discovery/item/f00000000000000000000001
+    https://www.xiaohongshu.com/discovery/item/f00000000000000000000002
+    https://www.xiaohongshu.com/discovery/item/f00000000000000000000001
+    F00000000000000000000004
     """
     let expectedBatch = [
-        "000000000000000000000001",
-        "000000000000000000000002",
-        "000000000000000000000004"
+        "f00000000000000000000001",
+        "f00000000000000000000002",
+        "f00000000000000000000004"
     ]
     guard LinkTools.extractNoteIDs(from: batchInput) == expectedBatch else {
         fputs("SELF-TEST FAILED: batch extraction or deduplication\n", stderr)
@@ -46,8 +46,8 @@ private func runSelfTests() -> Int32 {
     }
 
     guard let deepLink = LinkTools.deepLink(
-        for: "000000000000000000000001"
-    ), deepLink.absoluteString == "xhsdiscover://item/000000000000000000000001" else {
+        for: "f00000000000000000000001"
+    ), deepLink.absoluteString == "xhsdiscover://item/f00000000000000000000001" else {
         fputs("SELF-TEST FAILED: direct client link\n", stderr)
         return 1
     }
@@ -61,17 +61,17 @@ private func runXLSXSelfTest(destination: String) -> Int32 {
     let rows = [
         SpreadsheetExportRow(
             sequence: 1,
-            original: "https://www.xiaohongshu.com/discovery/item/000000000000000000000001",
-            noteID: "000000000000000000000001",
+            original: "https://www.xiaohongshu.com/discovery/item/f00000000000000000000001",
+            noteID: "f00000000000000000000001",
             status: "成功",
-            newURL: "https://www.xiaohongshu.com/explore/000000000000000000000001?xsec_token=TEST_TOKEN%3D&xsec_source=app_share",
+            newURL: "https://www.xiaohongshu.com/explore/f00000000000000000000001?xsec_token=TEST_TOKEN%3D&xsec_source=app_share",
             note: "已展开为带 xsec_token 的完整链接",
             processedAt: Date()
         ),
         SpreadsheetExportRow(
             sequence: 2,
-            original: "https://www.xiaohongshu.com/discovery/item/000000000000000000000002",
-            noteID: "000000000000000000000002",
+            original: "https://www.xiaohongshu.com/discovery/item/f00000000000000000000002",
+            noteID: "f00000000000000000000002",
             status: "已删除",
             newURL: "",
             note: "客户端显示当前内容无法展示",
@@ -79,8 +79,8 @@ private func runXLSXSelfTest(destination: String) -> Int32 {
         ),
         SpreadsheetExportRow(
             sequence: 3,
-            original: "000000000000000000000004",
-            noteID: "000000000000000000000004",
+            original: "f00000000000000000000004",
+            noteID: "f00000000000000000000004",
             status: "失败",
             newURL: "",
             note: "示例自动化失败信息",
@@ -122,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var outcomes: [BatchOutcome] = []
     private var batchRunning = false
     private var stopRequested = false
+    private var retryCount = 0
     private var lastExcelURL: URL?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -277,6 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        retryCount = 0
         batchItems = items
         batchIndex = 0
         outcomes = []
@@ -305,6 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runner.run(
             input: item.id,
             useCoordinateFallback: coordinateCheckbox.state == .on,
+            minimumInterval: intervalBetweenItems,
             onStatus: { [weak self] text in
                 guard let self else { return }
                 self.statusLabel.stringValue = "第 \(position)/\(self.batchItems.count) 条：\(text)"
@@ -312,15 +315,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             completion: { [weak self] result in
                 guard let self else { return }
 
+                if case .failure(let error) = result,
+                   let repairError = error as? RepairError,
+                   [.clipboardTimeout, .shareButtonNotFound, .copyButtonNotFound, .unexpectedPage].contains(repairError),
+                   self.retryCount == 0, !self.stopRequested {
+                    self.retryCount = 1
+                    self.statusLabel.stringValue = "页面已恢复，2 秒后重试当前链接（仅一次）…"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + self.intervalBetweenItems) {
+                        self.processNextItem()
+                    }
+                    return
+                }
+                self.retryCount = 0
+                var nextItemDelay = self.intervalBetweenItems
                 switch result {
                 case .success(let value):
+                    nextItemDelay = value.nextItemDelay
                     self.outcomes.append(.success(item: item, url: value.url, expanded: value.expanded))
                 case .failure(let error):
                     if let repairError = error as? RepairError {
                         switch repairError {
                         case .contentDeleted:
                             self.outcomes.append(.deleted(item: item))
-                        case .accessibilityPermission, .navigationRecoveryFailed:
+                        case .accessibilityPermission, .navigationRecoveryFailed, .foregroundChanged:
                             self.outcomes.append(.failure(item: item, message: error.localizedDescription))
                             self.stopRequested = true
                         default:
@@ -339,8 +356,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
 
-                self.statusLabel.stringValue = "第 \(position)/\(self.batchItems.count) 条完成，2 秒后继续…"
-                DispatchQueue.main.asyncAfter(deadline: .now() + self.intervalBetweenItems) {
+                self.statusLabel.stringValue = nextItemDelay > 0
+                    ? "第 \(position)/\(self.batchItems.count) 条完成，稍后继续…"
+                    : "第 \(position)/\(self.batchItems.count) 条完成，正在继续…"
+                DispatchQueue.main.asyncAfter(deadline: .now() + nextItemDelay) {
                     self.processNextItem()
                 }
             }
@@ -365,7 +384,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if case .deleted = $0 { return true }
             return false
         }.count
-        let failures = outcomes.count - successes.count - deleted
+        let pending = outcomes.filter {
+            if case .success(_, _, false) = $0 { return true }
+            return false
+        }.count
+        let failures = outcomes.count - successes.count - deleted - pending
         copyButton.isEnabled = !successes.isEmpty
 
         if !successes.isEmpty {
@@ -390,13 +413,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSSound.beep()
         } else if stopped {
             statusLabel.textColor = .systemOrange
-            statusLabel.stringValue = "已停止：成功 \(successes.count)，已删除 \(deleted)，失败 \(failures)；已导出 Excel"
+            statusLabel.stringValue = "已停止：成功 \(successes.count)，待核验 \(pending)，已删除 \(deleted)，失败 \(failures)；已导出 Excel"
         } else if successes.isEmpty {
             statusLabel.textColor = failures == 0 ? .systemOrange : .systemRed
-            statusLabel.stringValue = "完成：成功 0，已删除 \(deleted)，失败 \(failures)；已导出 Excel"
+            statusLabel.stringValue = "完成：成功 0，待核验 \(pending)，已删除 \(deleted)，失败 \(failures)；已导出 Excel"
         } else {
-            statusLabel.textColor = failures == 0 ? .systemGreen : .systemOrange
-            statusLabel.stringValue = "完成：成功 \(successes.count)，已删除 \(deleted)，失败 \(failures)；已导出 Excel"
+            statusLabel.textColor = failures == 0 && pending == 0 ? .systemGreen : .systemOrange
+            statusLabel.stringValue = "完成：成功 \(successes.count)，待核验 \(pending)，已删除 \(deleted)，失败 \(failures)；已导出 Excel"
         }
 
         NSApp.activate(ignoringOtherApps: true)
@@ -409,8 +432,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateOutput() {
         outputTextView.string = outcomes.map { outcome in
             switch outcome {
-            case .success(_, let url, _):
-                return url.absoluteString
+            case .success(_, let url, let expanded):
+                return expanded ? url.absoluteString : "【待核验】\(url.absoluteString)"
             case .deleted(let item):
                 return "【已删除】\(item.id)"
             case .failure(let item, let message):
@@ -422,7 +445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func successfulURLs() -> [URL] {
         outcomes.compactMap { outcome in
-            if case .success(_, let url, _) = outcome { return url }
+            if case .success(_, let url, true) = outcome { return url }
             return nil
         }
     }
@@ -435,7 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     sequence: offset + 1,
                     original: item.original,
                     noteID: item.id,
-                    status: "成功",
+                    status: expanded ? "成功" : "待核验",
                     newURL: url.absoluteString,
                     note: expanded ? "已核验笔记 ID 的完整链接" : "官方分享短链（未展开核验）",
                     processedAt: Date()

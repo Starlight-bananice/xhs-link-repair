@@ -6,6 +6,12 @@ func runAutomationSafetyTests() -> Bool {
     func check(_ condition: Bool, _ message: String) {
         if !condition { failures.append(message) }
     }
+    var readiness = PageReadiness()
+    check(!readiness.observe(ready: true, now: 0), "首次就绪不能立即点击")
+    check(!readiness.observe(ready: false, now: 0.3), "加载中应重置稳定窗口")
+    check(!readiness.observe(ready: true, now: 0.4), "重新就绪需要重新等待")
+    check(!readiness.observe(ready: true, now: 0.7), "未稳定不能提前点击")
+    check(readiness.observe(ready: true, now: 0.9), "稳定页面无需固定等待三秒")
     let home = NavigationSnapshot(labels: ["标签页栏", "发现"])
     let deleted = NavigationSnapshot(labels: ["返回", "当前内容无法展示", "跳转Ta的主页 · 3秒"])
     let profile = NavigationSnapshot(labels: ["返回", "小红书号：123456", "获赞与收藏", "更多"])
@@ -85,12 +91,12 @@ func runAutomationSafetyTests() -> Bool {
         now: { time }, sleep: { time += $0 }
     ), "未知或无窗口状态不能当作恢复成功")
 
-    let id = "000000000000000000000005"
+    let id = "f00000000000000000000005"
     let urlCases: [(String, Bool)] = [
         ("https://www.xiaohongshu.com/explore/\(id)?xsec_token=TEST", true),
         ("https://www.xiaohongshu.com/discovery/item/\(id)?xsec_token=TEST", true),
         ("https://www.xiaohongshu.com/user/profile/\(id)?xsec_token=TEST", false),
-        ("https://www.xiaohongshu.com/explore/000000000000000000000006?xsec_token=TEST", false),
+        ("https://www.xiaohongshu.com/explore/f00000000000000000000006?xsec_token=TEST", false),
         ("https://www.xiaohongshu.com/explore/\(id)", false),
         ("https://example.com/explore/\(id)?xsec_token=TEST", false),
         ("https://xiaohongshu.com.example.com/explore/\(id)?xsec_token=TEST", false),
@@ -109,7 +115,7 @@ func runAutomationSafetyTests() -> Bool {
     let task = session.dataTask(with: shortURL) // 不 resume，不访问网络。
     let response = HTTPURLResponse(url: shortURL, statusCode: 302, httpVersion: nil, headerFields: nil)!
     let redirectCases: [(String, Bool)] = [
-        ("https://www.xiaohongshu.com/discovery/item/000000000000000000000007?xsec_token=TEST", true),
+        ("https://www.xiaohongshu.com/discovery/item/f00000000000000000000007?xsec_token=TEST", true),
         ("https://www.xiaohongshu.com/user/profile/abc", true),
         ("https://xhslink.com/o/AnotherHop", false)
     ]
@@ -133,6 +139,54 @@ func runAutomationSafetyTests() -> Bool {
         URLQueryItem(name: "xsec_source", value: "app_share")
     ], "精简输出只保留两个参数并保持 token 原值")
     check(LinkTools.compactShareURL(shortURL) == shortURL, "未展开短链仍保留原链接")
+    // 慢网络不能阻止先返回首页；完成通知必须同时等到网络和页面恢复。
+    var deferredResolution: ((URL, Bool) -> Void)?
+    var resolutionStarted = false
+    var homeReturned = false
+    var combinedResult: (URL, Bool, Bool)?
+    let combinedDone = DispatchSemaphore(value: 0)
+    ShareURLResolver.resolveWhileReturningHome(
+        from: shortURL,
+        resolve: { _, callback in resolutionStarted = true; deferredResolution = callback },
+        returnHome: { homeReturned = resolutionStarted; return true },
+        completion: { url, expanded, restored in
+            combinedResult = (url, expanded, restored)
+            combinedDone.signal()
+        }
+    )
+    check(homeReturned, "网络未完成时也应立即返回首页")
+    check(combinedDone.wait(timeout: .now()) == .timedOut, "网络未完成时不能提前报告结果")
+    deferredResolution?(compactURL, true)
+    check(combinedDone.wait(timeout: .now() + 2) == .success, "网络完成后必须通知批次")
+    check(combinedResult?.0 == compactURL && combinedResult?.1 == true && combinedResult?.2 == true,
+          "并行展开保留结果和首页恢复状态")
+
+    var failedHomeCallbacks = 0
+    ShareURLResolver.resolveWhileReturningHome(
+        from: shortURL,
+        resolve: { _, callback in deferredResolution = callback },
+        returnHome: { false },
+        completion: { _, _, restored in failedHomeCallbacks += 1; check(!restored, "恢复失败不能报告成功") }
+    )
+    check(failedHomeCallbacks == 1, "恢复失败不必继续等待网络")
+    deferredResolution?(compactURL, true)
+    check(failedHomeCallbacks == 1, "晚到的网络结果不能重复完成失败条目")
+
+    let immediateDone = DispatchSemaphore(value: 0)
+    var immediateHome = false
+    var immediateResult = false
+    ShareURLResolver.resolveWhileReturningHome(
+        from: compactURL,
+        resolve: { url, callback in callback(url, true) },
+        returnHome: { immediateHome = true; return true },
+        completion: { _, _, restored in immediateResult = immediateHome && restored; immediateDone.signal() }
+    )
+    check(immediateDone.wait(timeout: .now() + 2) == .success && immediateResult,
+          "同步链接结果也必须等待返回首页")
+    check(ShareURLResolver.remainingInterval(since: 10, now: 10.5, minimum: 2) == 1.5,
+          "只等待剩余间隔")
+    check(ShareURLResolver.remainingInterval(since: 10, now: 12.5, minimum: 2) == 0,
+          "返回和展开已超过间隔时不能再追加等待")
     if failures.isEmpty {
         print("AUTOMATION SAFETY TESTS PASSED: recovery scenarios, page classification, \(urlCases.count) URL cases")
         return true

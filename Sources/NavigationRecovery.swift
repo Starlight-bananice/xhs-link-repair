@@ -4,8 +4,11 @@ import Foundation
 struct NavigationSnapshot {
     let labels: [String]
 
-    private var normalized: [String] {
-        labels.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    private let normalized: [String]
+
+    init(labels: [String]) {
+        self.labels = labels
+        self.normalized = labels.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
     }
 
     var isUnavailable: Bool {
@@ -81,5 +84,15 @@ enum NavigationRecovery {
             sleep(0.25)
         }
         return false
+    }
+}
+
+/// 页面必须连续就绪一小段时间，瞬间出现或重新加载会重置等待。
+struct PageReadiness {
+    private var readySince: TimeInterval?
+    mutating func observe(ready: Bool, now: TimeInterval, stableFor: TimeInterval = 0.45) -> Bool {
+        guard ready else { readySince = nil; return false }
+        if readySince == nil { readySince = now }
+        return now - readySince! >= stableFor
     }
 }

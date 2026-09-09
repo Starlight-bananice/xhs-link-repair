@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-enum RepairError: LocalizedError {
+enum RepairError: LocalizedError, Equatable {
     case invalidInput
     case accessibilityPermission
     case deepLinkOpenFailed
@@ -16,6 +16,7 @@ enum RepairError: LocalizedError {
     case copiedWrongNote
     case unexpectedPage
     case navigationRecoveryFailed
+    case foregroundChanged
 
     var errorDescription: String? {
         switch self {
@@ -43,6 +44,8 @@ enum RepairError: LocalizedError {
             return "复制到的链接不是当前笔记，已丢弃并恢复页面。"
         case .unexpectedPage:
             return "客户端停留在首页或作者主页，未打开目标笔记。"
+        case .foregroundChanged:
+            return "小红书窗口已不在前台，已停止点击。请切回客户端后重试。"
         case .navigationRecoveryFailed:
             return "未能恢复小红书首页，已停止批次。请在客户端返回首页后重新开始。"
         }
@@ -55,14 +58,17 @@ final class AutomationRunner {
     private let copyPointRatio = CGPoint(x: 0.786, y: 0.380)
 
     private var isRunning = false
+    private var activePID: pid_t?
 
     private var needsRedirectGuard = true
+    private var preparedHomePID: pid_t?
 
     func run(
         input: String,
         useCoordinateFallback: Bool,
+        minimumInterval: TimeInterval,
         onStatus: @escaping (String) -> Void,
-        completion: @escaping (Result<(url: URL, expanded: Bool), Error>) -> Void
+        completion: @escaping (Result<(url: URL, expanded: Bool, nextItemDelay: TimeInterval), Error>) -> Void
     ) {
         // run 和 finish 中的运行标记都在主线程访问，直到链接展开完成才释放。
         guard !isRunning else { return }
@@ -95,12 +101,34 @@ final class AutomationRunner {
                 finish(.failure(RepairError.appNotFound), completion: completion)
                 return
             }
-            _ = DispatchQueue.main.sync { app.activate(options: [.activateAllWindows]) }
-            postStatus("正在返回首页，清理上一条页面…", handler: onStatus)
-            guard restoreNavigation(in: app.processIdentifier, waitForPendingRedirect: needsRedirectGuard) else {
-                needsRedirectGuard = true
-                finish(.failure(RepairError.navigationRecoveryFailed), completion: completion)
+            activePID = app.processIdentifier
+            _ = DispatchQueue.main.sync {
+                if #available(macOS 14.0, *) { NSApp.yieldActivation(to: app) }
+                return app.activate(options: [.activateAllWindows])
+            }
+            let axApplication = AXUIElementCreateApplication(app.processIdentifier)
+            _ = AXUIElementSetAttributeValue(axApplication, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+            if let window = currentWindow(in: app.processIdentifier) {
+                _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            }
+            let activationDeadline = ProcessInfo.processInfo.systemUptime + 2
+            while frontmostPID() != app.processIdentifier && ProcessInfo.processInfo.systemUptime < activationDeadline {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            guard frontmostPID() == app.processIdentifier else {
+                finish(.failure(RepairError.foregroundChanged), completion: completion)
                 return
+            }
+            let canReuseHome = preparedHomePID == app.processIdentifier
+                && !needsRedirectGuard && navigationSnapshot(in: app.processIdentifier).isHome
+            preparedHomePID = nil
+            if !canReuseHome {
+                postStatus("正在返回首页，清理上一条页面…", handler: onStatus)
+                guard restoreNavigation(in: app.processIdentifier, waitForPendingRedirect: needsRedirectGuard) else {
+                    needsRedirectGuard = true
+                    finish(.failure(RepairError.navigationRecoveryFailed), completion: completion)
+                    return
+                }
             }
             needsRedirectGuard = false
 
@@ -120,11 +148,7 @@ final class AutomationRunner {
                 guard sharePressed else { throw RepairError.shareButtonNotFound }
 
                 // 打开分享面板期间也监测失效提示，不能只检查最初 3 秒。
-                let panelDeadline = ProcessInfo.processInfo.systemUptime + 1.4
-                repeat {
-                    try checkForInvalidPage(in: app.processIdentifier)
-                    Thread.sleep(forTimeInterval: 0.15)
-                } while ProcessInfo.processInfo.systemUptime < panelDeadline
+                try waitForSharePanel(in: app.processIdentifier, allowCoordinateFallback: useCoordinateFallback)
                 postStatus("正在点击“复制链接”…", handler: onStatus)
                 // 基准放在复制动作之前，忽略打开笔记过程中无关的剪贴板变化。
                 let pasteboardCount = DispatchQueue.main.sync { NSPasteboard.general.changeCount }
@@ -143,19 +167,31 @@ final class AutomationRunner {
                     throw RepairError.copiedWrongNote
                 }
 
-                postStatus("客户端已生成新链接，正在整理为浏览器可用格式…", handler: onStatus)
-                ShareURLResolver.browserReadyURL(from: copiedURL) { [self] finalURL, expanded in
-                    // 网络回调可能在任意队列；页面恢复仍在后台串行完成，再通知批次继续。
-                    DispatchQueue.global(qos: .userInitiated).async { [self] in
-                        guard LinkTools.isShareURL(finalURL, for: noteID) else {
-                            finishAfterRecovery(
-                                RepairError.copiedWrongNote, app: app,
-                                onStatus: onStatus, completion: completion
-                            )
-                            return
-                        }
-                        finish(.success((LinkTools.compactShareURL(finalURL), expanded)), completion: completion)
+                let copiedAt = ProcessInfo.processInfo.systemUptime
+                postStatus("链接已复制，正在返回首页并整理链接…", handler: onStatus)
+                try requireForeground(app.processIdentifier)
+                ShareURLResolver.resolveWhileReturningHome(
+                    from: copiedURL,
+                    returnHome: {
+                        self.restoreNavigation(in: app.processIdentifier, waitForPendingRedirect: false)
                     }
+                ) { [self] finalURL, expanded, homeRestored in
+                    guard homeRestored else {
+                        needsRedirectGuard = true
+                        finish(.failure(RepairError.navigationRecoveryFailed), completion: completion)
+                        return
+                    }
+                    needsRedirectGuard = false
+                    preparedHomePID = app.processIdentifier
+                    guard LinkTools.isShareURL(finalURL, for: noteID) else {
+                        // 页面已恢复，网络目标错误不再触发第二轮页面恢复。
+                        finish(.failure(RepairError.copiedWrongNote), completion: completion)
+                        return
+                    }
+                    let delay = ShareURLResolver.remainingInterval(
+                        since: copiedAt, now: ProcessInfo.processInfo.systemUptime, minimum: minimumInterval
+                    )
+                    finish(.success((LinkTools.compactShareURL(finalURL), expanded, delay)), completion: completion)
                 }
             } catch {
                 finishAfterRecovery(error, app: app, onStatus: onStatus, completion: completion)
@@ -167,12 +203,18 @@ final class AutomationRunner {
         _ error: Error,
         app: NSRunningApplication,
         onStatus: @escaping (String) -> Void,
-        completion: @escaping (Result<(url: URL, expanded: Bool), Error>) -> Void
+        completion: @escaping (Result<(url: URL, expanded: Bool, nextItemDelay: TimeInterval), Error>) -> Void
     ) {
+        preparedHomePID = nil
+        if let repairError = error as? RepairError, repairError == .foregroundChanged {
+            needsRedirectGuard = true
+            finish(.failure(error), completion: completion)
+            return
+        }
         postStatus("当前链接未成功，正在退出页面并等待跳转结束…", handler: onStatus)
         needsRedirectGuard = !restoreNavigation(in: app.processIdentifier, waitForPendingRedirect: true)
-        // 保留本条原始原因（尤其是“已删除”）；若恢复失败，下条开头会停止批次。
-        finish(.failure(error), completion: completion)
+        // 恢复失败立即结束，避免暂时性故障重试进入未知页面。
+        finish(.failure(needsRedirectGuard ? RepairError.navigationRecoveryFailed : error), completion: completion)
     }
 
     private func restoreNavigation(in pid: pid_t, waitForPendingRedirect: Bool) -> Bool {
@@ -187,16 +229,45 @@ final class AutomationRunner {
     private func waitForNotePage(in pid: pid_t) throws {
         let started = ProcessInfo.processInfo.systemUptime
         let deadline = started + 10
+        var readiness = PageReadiness()
         repeat {
+            try requireForeground(pid)
             let page = navigationSnapshot(in: pid)
             if page.isUnavailable { throw RepairError.contentDeleted }
-            if ProcessInfo.processInfo.systemUptime - started >= 3, page.isNoteCandidate { return }
+            if readiness.observe(ready: page.isNoteCandidate, now: ProcessInfo.processInfo.systemUptime) { return }
             Thread.sleep(forTimeInterval: 0.15)
         } while ProcessInfo.processInfo.systemUptime < deadline
         throw RepairError.unexpectedPage
     }
 
+    private func frontmostPID() -> pid_t? {
+        DispatchQueue.main.sync { NSWorkspace.shared.frontmostApplication?.processIdentifier }
+    }
+
+    private func requireForeground(_ pid: pid_t) throws {
+        guard frontmostPID() == pid else {
+            throw RepairError.foregroundChanged
+        }
+    }
+
+    private func waitForSharePanel(in pid: pid_t, allowCoordinateFallback: Bool) throws {
+        let started = ProcessInfo.processInfo.systemUptime
+        var readiness = PageReadiness()
+        repeat {
+            try requireForeground(pid)
+            let page = navigationSnapshot(in: pid)
+            if page.isUnavailable { throw RepairError.contentDeleted }
+            if readiness.observe(ready: page.hasSharePanel, now: ProcessInfo.processInfo.systemUptime, stableFor: 0.3) { return }
+            if page.isProfile || page.isHome { throw RepairError.unexpectedPage }
+            // 无标签的客户端保留原先面板等待；有明确控件时立即继续。
+            if allowCoordinateFallback && ProcessInfo.processInfo.systemUptime - started >= 1.4 { return }
+            Thread.sleep(forTimeInterval: 0.15)
+        } while ProcessInfo.processInfo.systemUptime - started < 5
+        throw RepairError.copyButtonNotFound
+    }
+
     private func checkForInvalidPage(in pid: pid_t) throws {
+        try requireForeground(pid)
         let page = navigationSnapshot(in: pid)
         if page.isUnavailable { throw RepairError.contentDeleted }
         if page.isProfile || page.isHome { throw RepairError.unexpectedPage }
@@ -298,8 +369,8 @@ final class AutomationRunner {
         var visited = 0
         let needles = labels.map { $0.lowercased() }
 
-        while !queue.isEmpty && visited < 1_500 {
-            let (element, depth) = queue.removeFirst()
+        while visited < queue.count && visited < 1_500 {
+            let (element, depth) = queue[visited]
             visited += 1
             let texts = accessibilityStrings(for: element).map { $0.lowercased() }
             let matches = texts.contains { text in
@@ -335,6 +406,8 @@ final class AutomationRunner {
     }
 
     private func press(_ element: AXUIElement) -> Bool {
+        guard let pid = activePID,
+              frontmostPID() == pid else { return false }
         if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
             return true
         }
@@ -352,6 +425,9 @@ final class AutomationRunner {
     }
 
     private func click(at point: CGPoint) -> Bool {
+        guard let pid = activePID,
+              frontmostPID() == pid,
+              let frame = frontWindowFrame(for: pid), frame.contains(point) else { return false }
         guard let down = CGEvent(
             mouseEventSource: nil,
             mouseType: .leftMouseDown,
@@ -373,28 +449,20 @@ final class AutomationRunner {
     }
 
     private func frontWindowFrame(for pid: pid_t) -> CGRect? {
-        guard let list = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else {
-            return nil
-        }
-
-        var candidates: [CGRect] = []
+        guard frontmostPID() == pid,
+              let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+                as? [[String: Any]] else { return nil }
+        // 窗口列表按前后顺序排列；iPad 包装应用的 AX 窗口尺寸并不总与屏幕坐标一致。
+        // 只取当前进程最前面的正常窗口，不再选面积最大的窗口。
         for info in list {
-            guard let ownerPID = info[kCGWindowOwnerPID as String] as? NSNumber,
-                  ownerPID.int32Value == pid,
-                  let layer = info[kCGWindowLayer as String] as? NSNumber,
-                  layer.intValue == 0,
+            guard (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+                  (info[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
                   let bounds = info[kCGWindowBounds as String] as? NSDictionary,
-                  let rect = CGRect(dictionaryRepresentation: bounds) else {
-                continue
-            }
-            if rect.width > 400 && rect.height > 300 {
-                candidates.append(rect)
-            }
+                  let frame = CGRect(dictionaryRepresentation: bounds),
+                  frame.width > 400, frame.height > 300 else { continue }
+            return frame
         }
-        return candidates.max(by: { $0.width * $0.height < $1.width * $1.height })
+        return nil
     }
 
     private func attributeValue(_ element: AXUIElement, _ attribute: CFString) -> CFTypeRef? {
@@ -447,6 +515,7 @@ final class AutomationRunner {
         completion: @escaping (Result<T, Error>) -> Void
     ) {
         DispatchQueue.main.async {
+            self.activePID = nil
             self.isRunning = false
             completion(result)
         }

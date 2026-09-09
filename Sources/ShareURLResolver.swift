@@ -24,6 +24,39 @@ final class ShareRedirectDelegate: NSObject, URLSessionTaskDelegate {
 }
 
 enum ShareURLResolver {
+    static func remainingInterval(since copiedAt: TimeInterval, now: TimeInterval, minimum: TimeInterval) -> TimeInterval {
+        max(0, minimum - (now - copiedAt))
+    }
+
+    /// 在后台执行。网络展开立即启动，返回首页与网络等待重叠；两者完成后仅通知一次。
+    static func resolveWhileReturningHome(
+        from copiedURL: URL,
+        resolve: (URL, @escaping (URL, Bool) -> Void) -> Void = browserReadyURL,
+        returnHome: () -> Bool,
+        completion: @escaping (URL, Bool, Bool) -> Void
+    ) {
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var resolved = (copiedURL, false)
+        group.enter()
+        resolve(copiedURL) { url, expanded in
+            lock.lock()
+            resolved = (url, expanded)
+            lock.unlock()
+            group.leave()
+        }
+        guard returnHome() else {
+            completion(copiedURL, false, false)
+            return
+        }
+        group.notify(queue: .global(qos: .userInitiated)) {
+            lock.lock()
+            let result = resolved
+            lock.unlock()
+            completion(result.0, result.1, true)
+        }
+    }
+
     static func browserReadyURL(from copiedURL: URL, completion: @escaping (URL, Bool) -> Void) {
         guard LinkTools.isOfficialShortLink(copiedURL) else {
             completion(copiedURL, LinkTools.isSignedXiaohongshuLink(copiedURL))
