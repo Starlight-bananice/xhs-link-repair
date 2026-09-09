@@ -1,0 +1,10 @@
+.DS_Store
+*.app/
+outputs/
+dist/
+.build/
+*.xlsx
+*.csv
+*.log
+.env
+.env.*
