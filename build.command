@@ -7,7 +7,8 @@ MACOS_DIR="$APP_DIR/Contents/MacOS"
 
 mkdir -p "$MACOS_DIR"
 
-MACOSX_DEPLOYMENT_TARGET=13.0 swiftc \
+swiftc \
+  -target arm64-apple-macosx13.0 \
   -swift-version 5 \
   -O \
   -framework AppKit \
