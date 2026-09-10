@@ -5,10 +5,15 @@ struct NoteReference: Equatable {
     let original: String
 }
 
+enum BatchInput: Equatable {
+    case note(NoteReference)
+    case shortLink(URL)
+}
+
 enum LinkTools {
     private static let notePathPattern = #"(?i)(?:discovery/item|explore|xhsdiscover://item)/(?:discovery\.)?([0-9a-f]{24})"#
     private static let bareIDPattern = #"(?i)(?<![0-9a-f])([0-9a-f]{24})(?![0-9a-f])"#
-    private static let webURLPattern = #"https?://[^\s<>\"']+"#
+    private static let webURLPattern = #"https?://[^\s<>\"'，。；、（）()\[\]{}]+"#
 
     static func extractNoteID(from text: String) -> String? {
         if let id = firstCapture(in: text, pattern: notePathPattern) {
@@ -55,28 +60,38 @@ enum LinkTools {
     }
 
     static func extractNoteReferences(from text: String) -> [NoteReference] {
-        var seen = Set<String>()
-        var result: [NoteReference] = []
-        let lines = text.components(separatedBy: .newlines)
+        extractBatchInputs(from: text).compactMap {
+            if case .note(let reference) = $0 { return reference }
+            return nil
+        }
+    }
 
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            let urls = extractWebURLs(from: trimmed)
-            for id in extractNoteIDs(from: trimmed) where seen.insert(id).inserted {
-                let original = urls.first(where: { $0.absoluteString.lowercased().contains(id) })?.absoluteString
-                    ?? trimmed
-                result.append(NoteReference(id: id, original: original))
+    static func extractBatchInputs(from text: String) -> [BatchInput] {
+        // 同时扫描 URL 和裸 ID，保留混合粘贴时的首次出现顺序。
+        // 整个 URL 先作为一个匹配，避免把主页 ID、签名参数误当成笔记。
+        let normalized = text
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&#x20;", with: " ", options: .caseInsensitive)
+            .replacingOccurrences(of: "&#32;", with: " ")
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+        let pattern = "\(webURLPattern)|xhsdiscover://item/(?:discovery\\.)?[0-9a-f]{24}|\(bareIDPattern)"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
+        var seen = Set<String>()
+        var inputs: [BatchInput] = []
+        for match in regex.matches(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)) {
+            guard let range = Range(match.range, in: normalized) else { continue }
+            let token = String(normalized[range])
+            if let url = extractWebURL(from: token) {
+                if isOfficialShortLink(url), !url.path.isEmpty, url.path != "/" {
+                    if seen.insert("short:\(url.absoluteString)").inserted { inputs.append(.shortLink(url)) }
+                } else if let id = noteID(in: url), seen.insert("note:\(id)").inserted {
+                    inputs.append(.note(NoteReference(id: id, original: url.absoluteString)))
+                }
+            } else if let id = extractNoteID(from: token), seen.insert("note:\(id)").inserted {
+                inputs.append(.note(NoteReference(id: id, original: token)))
             }
         }
-
-        // 支持没有换行、但包含多条链接的整段文本。
-        for id in extractNoteIDs(from: text) where seen.insert(id).inserted {
-            let original = extractWebURLs(from: text)
-                .first(where: { $0.absoluteString.lowercased().contains(id) })?.absoluteString ?? id
-            result.append(NoteReference(id: id, original: original))
-        }
-        return result
+        return inputs
     }
 
     static func isOfficialShortLink(_ url: URL) -> Bool {

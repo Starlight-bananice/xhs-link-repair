@@ -52,7 +52,7 @@ private func runSelfTests() -> Int32 {
         return 1
     }
 
-    guard runAutomationSafetyTests(), runExportSettingsTests(), runAppUpdaterTests() else { return 1 }
+    guard runAutomationSafetyTests(), runShortLinkInputTests(), runExportSettingsTests(), runAppUpdaterTests() else { return 1 }
     print("SELF-TEST PASSED")
     return 0
 }
@@ -101,6 +101,7 @@ private enum BatchOutcome {
     case success(item: NoteReference, url: URL, expanded: Bool)
     case deleted(item: NoteReference)
     case failure(item: NoteReference, message: String)
+    case inputFailure(original: String, message: String)
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -128,7 +129,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateTask: Task<Void, Never>?
 
 
-    private var batchItems: [NoteReference] = []
+    private var batchItems: [BatchInput] = []
+    private var firstNoteIndices: [String: Int] = [:]
     private var batchIndex = 0
     private var outcomes: [BatchOutcome] = []
     private var batchRunning = false
@@ -168,7 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content.addSubview(title)
 
         let subtitle = label(
-            "每行一条，也可直接粘贴整列或表格；按顺序逐条处理并自动去重。",
+            "支持短链、长链接和笔记 ID；可混合粘贴分享文案或表格，按顺序处理并去重。",
             size: 13,
             color: .secondaryLabelColor
         )
@@ -318,16 +320,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func prefillFromClipboard() {
         guard let text = NSPasteboard.general.string(forType: .string),
-              !LinkTools.extractNoteIDs(from: text).isEmpty else { return }
+              !LinkTools.extractBatchInputs(from: text).isEmpty else { return }
         inputTextView.string = text
     }
 
     @objc private func startBatch() {
         guard !batchRunning, !installingUpdate else { return }
-        let items = LinkTools.extractNoteReferences(from: inputTextView.string)
+        let items = LinkTools.extractBatchInputs(from: inputTextView.string)
         guard !items.isEmpty else {
             statusLabel.textColor = .systemRed
-            statusLabel.stringValue = "没有识别到小红书笔记 ID"
+            statusLabel.stringValue = "请输入小红书短链、笔记链接或 24 位笔记 ID"
             NSSound.beep()
             return
         }
@@ -345,6 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         retryCount = 0
         batchItems = items
+        firstNoteIndices = [:]
         batchIndex = 0
         outcomes = []
         batchRunning = true
@@ -368,8 +371,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        switch batchItems[batchIndex] {
+        case .shortLink(let url):
+            statusLabel.stringValue = "第 \(batchIndex + 1)/\(batchItems.count) 条：正在展开短链…"
+            ShareURLResolver.noteReference(from: url) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self, self.batchRunning else { return }
+                    // 展开期间点击停止后，不再启动客户端或处理下一条。
+                    guard !self.stopRequested else { self.finishBatch(stopped: true); return }
+                    switch result {
+                    case .success(let reference):
+                        // 缓存本条结果，客户端暂时性故障重试时不重复请求短链。
+                        self.batchItems[self.batchIndex] = .note(reference)
+                    case .failure(let error):
+                        self.outcomes.append(.inputFailure(original: url.absoluteString, message: error.localizedDescription))
+                        self.batchIndex += 1
+                        self.updateOutput()
+                    }
+                    self.processNextItem()
+                }
+            }
+        case .note(let item):
+            if let firstIndex = firstNoteIndices[item.id], firstIndex != batchIndex {
+                // 不同短链，以及短链与长链接，可能指向同一笔记。
+                batchIndex += 1
+                DispatchQueue.main.async { [weak self] in self?.processNextItem() }
+                return
+            }
+            firstNoteIndices[item.id] = batchIndex
+            repairNote(item)
+        }
+    }
+
+    private func repairNote(_ item: NoteReference) {
         let position = batchIndex + 1
-        let item = batchItems[batchIndex]
         statusLabel.stringValue = "第 \(position)/\(batchItems.count) 条：准备打开 \(item.id)"
 
         runner.run(
@@ -484,7 +519,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSSound.beep()
         } else if stopped {
             statusLabel.textColor = .systemOrange
-            statusLabel.stringValue = "已停止：成功 \(successes.count)，待核验 \(pending)，已删除 \(deleted)，失败 \(failures)；已导出 Excel"
+            statusLabel.stringValue = outcomes.isEmpty ? "已停止，尚无已处理结果" :
+                "已停止：成功 \(successes.count)，待核验 \(pending)，已删除 \(deleted)，失败 \(failures)；已导出 Excel"
         } else if successes.isEmpty {
             statusLabel.textColor = failures == 0 ? .systemOrange : .systemRed
             statusLabel.stringValue = "完成：成功 0，待核验 \(pending)，已删除 \(deleted)，失败 \(failures)；已导出 Excel"
@@ -509,6 +545,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return "【已删除】\(item.id)"
             case .failure(let item, let message):
                 return "【失败】\(item.id) — \(message)"
+            case .inputFailure(let original, let message):
+                return "【失败】\(original) — \(message)"
             }
         }.joined(separator: "\n")
         outputTextView.scrollToEndOfDocument(nil)
@@ -535,6 +573,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     status: "已删除",
                     newURL: "",
                     note: "客户端显示当前内容无法展示",
+                    processedAt: Date()
+                )
+            case .inputFailure(let original, let message):
+                return SpreadsheetExportRow(
+                    sequence: offset + 1,
+                    original: original,
+                    noteID: "",
+                    status: "失败",
+                    newURL: "",
+                    note: message,
                     processedAt: Date()
                 )
             case .failure(let item, let message):

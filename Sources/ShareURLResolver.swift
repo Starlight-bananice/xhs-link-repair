@@ -57,6 +57,29 @@ enum ShareURLResolver {
         }
     }
 
+    /// 输入短链仅用于定位笔记；仍由客户端重新分享，不能把旧签名当作修复结果。
+    static func noteReference(
+        from shortURL: URL,
+        expand: (URL, @escaping (URL, Bool) -> Void) -> Void = browserReadyURL,
+        completion: @escaping (Result<NoteReference, ShortLinkInputError>) -> Void
+    ) {
+        guard LinkTools.isOfficialShortLink(shortURL),
+              ["http", "https"].contains(shortURL.scheme?.lowercased() ?? ""),
+              !shortURL.path.isEmpty, shortURL.path != "/" else {
+            completion(.failure(.notNote))
+            return
+        }
+        expand(shortURL) { destination, _ in
+            if let id = LinkTools.noteID(in: destination) {
+                completion(.success(NoteReference(id: id, original: shortURL.absoluteString)))
+            } else if destination == shortURL {
+                completion(.failure(.expansionFailed))
+            } else {
+                completion(.failure(.notNote))
+            }
+        }
+    }
+
     static func browserReadyURL(from copiedURL: URL, completion: @escaping (URL, Bool) -> Void) {
         guard LinkTools.isOfficialShortLink(copiedURL) else {
             completion(copiedURL, LinkTools.isSignedXiaohongshuLink(copiedURL))
@@ -70,7 +93,11 @@ enum ShareURLResolver {
 
         let redirectDelegate = ShareRedirectDelegate()
         let session = URLSession(configuration: configuration, delegate: redirectDelegate, delegateQueue: nil)
-        var request = URLRequest(url: copiedURL)
+        // 官方分享文案仍可能使用 HTTP；App 的 ATS 会拒绝明文请求。
+        // 服务支持 HTTPS，升级请求协议，结果中仍保留用户输入的原始短链。
+        var components = URLComponents(url: copiedURL, resolvingAgainstBaseURL: false)
+        if components?.scheme?.lowercased() == "http" { components?.scheme = "https" }
+        var request = URLRequest(url: components?.url ?? copiedURL)
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/605.1.15 Safari/605.1.15",
             forHTTPHeaderField: "User-Agent"
@@ -91,5 +118,19 @@ enum ShareURLResolver {
             }
         }
         task.resume()
+    }
+}
+
+enum ShortLinkInputError: LocalizedError {
+    case expansionFailed
+    case notNote
+
+    var errorDescription: String? {
+        switch self {
+        case .expansionFailed:
+            return "未能展开短链，请检查网络或重新复制分享链接后重试。"
+        case .notNote:
+            return "短链未指向小红书笔记，可能是作者主页或其他页面。"
+        }
     }
 }
