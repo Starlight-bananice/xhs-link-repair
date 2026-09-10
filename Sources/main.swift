@@ -52,7 +52,7 @@ private func runSelfTests() -> Int32 {
         return 1
     }
 
-    guard runAutomationSafetyTests(), runExportSettingsTests() else { return 1 }
+    guard runAutomationSafetyTests(), runExportSettingsTests(), runAppUpdaterTests() else { return 1 }
     print("SELF-TEST PASSED")
     return 0
 }
@@ -120,6 +120,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var folderLabel: NSTextField!
     private var excelButton: NSButton!
     private var coordinateCheckbox: NSButton!
+    private var updateButton: NSButton!
+    private var availableRelease: AppRelease?
+    private var updateBusy = false
+    private var installingUpdate = false
+    private var updateTask: Task<Void, Never>?
+
 
     private var batchItems: [NoteReference] = []
     private var batchIndex = 0
@@ -133,7 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         AppMenu.install(on: NSApp)
         buildWindow()
-        prefillFromClipboard()
+        restoreUpdateSession()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.checkForUpdates(manual: false) }
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -230,12 +237,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content.addSubview(output.scrollView)
 
         let permissionHint = label(
-            "逐条串行处理；结束后自动生成并打开 Excel，失效内容标记为“已删除”。",
+            "逐条处理；结束后生成 Excel，失效内容标记为“已删除”。",
             size: 12,
             color: .tertiaryLabelColor
         )
-        permissionHint.frame = NSRect(x: 28, y: 20, width: 704, height: 24)
+        permissionHint.frame = NSRect(x: 28, y: 20, width: 510, height: 24)
         content.addSubview(permissionHint)
+
+        let versionLabel = label("v\(AppUpdater.currentVersion)", size: 11, color: .secondaryLabelColor)
+        versionLabel.frame = NSRect(x: 546, y: 23, width: 72, height: 20)
+        versionLabel.alignment = .right
+        content.addSubview(versionLabel)
+        updateButton = NSButton(title: "检查更新", target: self, action: #selector(updateClicked))
+        updateButton.frame = NSRect(x: 628, y: 17, width: 104, height: 28)
+        updateButton.bezelStyle = .rounded
+        updateButton.controlSize = .small
+        updateButton.font = .systemFont(ofSize: 11)
+        content.addSubview(updateButton)
+
+        // 标签使用自身固有高度，与同排按钮垂直居中，避免固定文本框高度造成视觉错位。
+        let textRows: [(NSTextField, NSButton)] = [
+            (statusLabel, runButton), (folderTitle, folderButton), (folderLabel, folderButton),
+            (outputTitle, excelButton), (permissionHint, updateButton), (versionLabel, updateButton)
+        ]
+        for (field, button) in textRows {
+            let frame = field.frame
+            field.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                field.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: frame.minX),
+                field.widthAnchor.constraint(equalToConstant: frame.width),
+                field.centerYAnchor.constraint(equalTo: button.centerYAnchor)
+            ])
+        }
 
         window.makeKeyAndOrderFront(nil)
     }
@@ -284,7 +317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func startBatch() {
-        guard !batchRunning else { return }
+        guard !batchRunning, !installingUpdate else { return }
         let items = LinkTools.extractNoteReferences(from: inputTextView.string)
         guard !items.isEmpty else {
             statusLabel.textColor = .systemRed
@@ -309,6 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         batchIndex = 0
         outcomes = []
         batchRunning = true
+        updateButton.isEnabled = false
         stopRequested = false
         outputTextView.string = ""
         runButton.isEnabled = false
@@ -403,6 +437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func finishBatch(stopped: Bool) {
         batchRunning = false
+        updateButton.isEnabled = !updateBusy
         runButton.isEnabled = true
         stopButton.isEnabled = false
 
@@ -508,6 +543,113 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func restoreUpdateSession() {
+        do {
+            if let saved = try UpdateSession.take() {
+                inputTextView.string = saved.input
+                outputTextView.string = saved.output
+                statusLabel.stringValue = saved.status
+                if let fallback = saved.coordinateFallback { coordinateCheckbox.state = fallback ? .on : .off }
+                if let path = saved.excelPath, FileManager.default.fileExists(atPath: path) {
+                    lastExcelURL = URL(fileURLWithPath: path)
+                    excelButton.isEnabled = true
+                }
+            } else {
+                prefillFromClipboard()
+            }
+        } catch {
+            statusLabel.stringValue = "上次更新的输入未能恢复，请重新粘贴链接"
+        }
+        if let message = try? String(contentsOf: UpdateSession.failureFile, encoding: .utf8) {
+            statusLabel.stringValue = message
+            statusLabel.textColor = .systemOrange
+            try? FileManager.default.removeItem(at: UpdateSession.failureFile)
+        }
+    }
+
+    @objc private func updateClicked() {
+        guard !batchRunning, !updateBusy else { return }
+        if let release = availableRelease { downloadUpdate(release) }
+        else { checkForUpdates(manual: true) }
+    }
+
+    private func checkForUpdates(manual: Bool) {
+        guard !updateBusy else { return }
+        updateBusy = true
+        updateButton.title = "检查中…"
+        updateButton.isEnabled = false
+        updateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                self.availableRelease = try await AppUpdater.check(currentVersion: AppUpdater.currentVersion)
+                self.updateButton.title = self.availableRelease == nil ? "已是最新版" : "更新"
+                self.updateButton.toolTip = self.availableRelease.map { "更新到 v\($0.version)，下载后安装并重启" }
+                if manual, self.availableRelease == nil {
+                    self.statusLabel.stringValue = "当前已是最新版 v\(AppUpdater.currentVersion)"
+                    self.statusLabel.textColor = .secondaryLabelColor
+                }
+            } catch {
+                self.updateButton.title = "重试检查"
+                self.updateButton.toolTip = error.localizedDescription
+                if manual { self.showUpdateError("检查更新失败", error: error) }
+            }
+            self.updateBusy = false
+            self.updateButton.isEnabled = !self.batchRunning
+        }
+    }
+
+    private func downloadUpdate(_ release: AppRelease) {
+        guard !batchRunning, !updateBusy else { return }
+        updateBusy = true
+        installingUpdate = true
+        updateButton.isEnabled = false
+        runButton.isEnabled = false
+        folderButton.isEnabled = false
+        historyButton.isEnabled = false
+        updateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var prepared: PreparedAppUpdate?
+            var savedSession = false
+            do {
+                let update = try await AppUpdater.prepare(release) { [weak self] text in
+                    DispatchQueue.main.async { self?.updateButton.title = text }
+                }
+                prepared = update
+                let snapshot = UpdateSession(input: self.inputTextView.string, output: self.outputTextView.string,
+                                             status: self.statusLabel.stringValue, excelPath: self.lastExcelURL?.path,
+                                             coordinateFallback: self.coordinateCheckbox.state == .on)
+                try snapshot.save()
+                savedSession = true
+                try? FileManager.default.removeItem(at: UpdateSession.failureFile)
+                try AppUpdater.launchInstaller(update, parentPID: ProcessInfo.processInfo.processIdentifier)
+                self.updateButton.title = "正在重启…"
+                NSApp.terminate(nil)
+            } catch {
+                if savedSession { try? FileManager.default.removeItem(at: UpdateSession.file) }
+                if let prepared { try? FileManager.default.removeItem(at: prepared.directory) }
+                self.updateBusy = false
+                self.installingUpdate = false
+                self.updateButton.title = "重试更新"
+                self.updateButton.isEnabled = true
+                self.runButton.isEnabled = true
+                self.folderButton.isEnabled = true
+                self.historyButton.isEnabled = true
+                self.showUpdateError("更新未完成", error: error)
+            }
+        }
+    }
+
+    private func showUpdateError(_ title: String, error: Error) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "知道了")
+        alert.addButton(withTitle: "打开发布页")
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertSecondButtonReturn { _ = NSWorkspace.shared.open(AppUpdater.releasePage) }
+        }
+    }
+
     private func updateFolderLabel() {
         folderLabel.stringValue = (exportSettings.directory.path as NSString).abbreviatingWithTildeInPath
         folderLabel.toolTip = exportSettings.directory.path
@@ -548,6 +690,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 if CommandLine.arguments.contains("--self-test") {
     exit(runSelfTests())
+}
+
+if CommandLine.arguments.contains("--test-update-download") {
+    Task.detached {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("xhs-update-download-test-\(UUID().uuidString)")
+        do {
+            defer { try? FileManager.default.removeItem(at: root) }
+            guard let release = try await AppUpdater.check(currentVersion: "0.0.0") else { throw UpdateFailure("没有可测试的正式版") }
+            let target = root.appendingPathComponent("fixture.app")
+            try FileManager.default.createDirectory(at: target.appendingPathComponent("Contents"), withIntermediateDirectories: true)
+            let info = try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": AppUpdater.bundleID], format: .xml, options: 0)
+            try info.write(to: target.appendingPathComponent("Contents/Info.plist"))
+            let prepared = try await AppUpdater.prepare(release, target: target) { print($0) }
+            guard FileManager.default.fileExists(atPath: prepared.source.appendingPathComponent("Contents/MacOS/XHSLinkRepair").path) else {
+                throw UpdateFailure("下载验证未完成")
+            }
+            try FileManager.default.removeItem(at: root)
+            print("LIVE UPDATE DOWNLOAD PASSED: \(release.version); installed app was not changed")
+            exit(0)
+        } catch { try? FileManager.default.removeItem(at: root); fputs("LIVE UPDATE DOWNLOAD FAILED: \(error.localizedDescription)\n", stderr); exit(1) }
+    }
+    dispatchMain()
+}
+
+if let index = CommandLine.arguments.firstIndex(of: "--check-update"),
+   CommandLine.arguments.indices.contains(index + 1) {
+    let version = CommandLine.arguments[index + 1]
+    Task.detached {
+        do {
+            if let release = try await AppUpdater.check(currentVersion: version) { print("UPDATE AVAILABLE: \(release.version)") }
+            else { print("NO NEWER RELEASE") }
+            exit(0)
+        } catch { fputs("UPDATE CHECK FAILED: \(error.localizedDescription)\n", stderr); exit(1) }
+    }
+    dispatchMain()
 }
 
 if let index = CommandLine.arguments.firstIndex(of: "--xlsx-self-test"),
