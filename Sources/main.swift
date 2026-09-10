@@ -183,7 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content.addSubview(input.scrollView)
 
         coordinateCheckbox = NSButton(
-            checkboxWithTitle: "控件识别失败时按窗口位置点击（适配 iPad 版 9.45.2）",
+            checkboxWithTitle: "控件识别失败时按窗口位置点击（适配 iPad 版 9.46.2）",
             target: nil,
             action: nil
         )
