@@ -17,6 +17,8 @@ swiftc \
   -o "$MACOS_DIR/XHSLinkRepair"
 
 cp "$SCRIPT_DIR/Info.plist" "$APP_DIR/Contents/Info.plist"
+mkdir -p "$APP_DIR/Contents/Resources"
+cp "$SCRIPT_DIR/Resources/BrowserLinkHelper.html" "$APP_DIR/Contents/Resources/BrowserLinkHelper.html"
 chmod +x "$MACOS_DIR/XHSLinkRepair"
 # 固定 designated requirement。默认临时签名会把每次构建的 CDHash 当作身份，
 # 导致 macOS 辅助功能权限在更新后看似开启、实际却不再匹配。

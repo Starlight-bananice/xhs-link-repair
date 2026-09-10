@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>恢复浏览器打开 · 小红书链接修复</title>
+  <style>
+    :root { color-scheme: light; --ink: #19312d; --muted: #61706a; --line: #dce3dc; --green: #176b52; --paper: #fffefa; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f2f4ee; color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", sans-serif; font-size: 16px; line-height: 1.65; }
+    main { width: min(920px, calc(100% - 40px)); margin: 48px auto 36px; }
+    .eyebrow { color: var(--green); font-size: 12px; font-weight: 700; letter-spacing: .15em; }
+    h1 { margin: 8px 0 12px; font-size: clamp(30px, 5vw, 43px); line-height: 1.2; letter-spacing: -.045em; }
+    .intro { margin: 0; color: var(--muted); max-width: 690px; }
+    .browser { display: flex; align-items: baseline; gap: 12px; margin: 25px 0 22px; padding: 13px 17px; background: #e5efe6; border: 1px solid #cadccc; border-radius: 12px; font-size: 14px; }
+    .browser strong { flex-shrink: 0; }
+    .browser.attention { background: #fff1d8; border-color: #e9d6b1; color: #664919; }
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 26px; }
+    .step { display: flex; gap: 11px; align-items: flex-start; }
+    .number { display: grid; place-items: center; flex: 0 0 28px; height: 28px; border: 1px solid #c2d2c7; border-radius: 50%; color: var(--green); font-size: 13px; font-weight: 700; }
+    .step strong { display: block; margin: 0 0 3px; font-size: 15px; }
+    .step p { margin: 0; font-size: 13px; color: var(--muted); }
+    .panel { padding: 27px; background: var(--paper); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 8px 30px #23382b05; }
+    label { display: block; font-weight: 650; margin-bottom: 5px; }
+    .hint { color: var(--muted); font-size: 13px; margin: 0 0 13px; }
+    textarea { display: block; width: 100%; min-height: 155px; resize: vertical; padding: 15px; border: 1px solid #cbd5cb; border-radius: 10px; background: #fff; color: var(--ink); font: inherit; font-size: 14px; line-height: 1.6; }
+    textarea::placeholder { color: #7e8881; }
+    textarea:focus { outline: 3px solid #176b5220; border-color: var(--green); }
+    .actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+    button { padding: 10px 19px; border: 1px solid var(--green); border-radius: 9px; color: white; background: var(--green); font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
+    button:hover { background: #105840; }
+    .secondary { border-color: #d6ded3; background: transparent; color: var(--muted); }
+    .secondary:hover { background: #f0f3ec; }
+    button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid #729c87; outline-offset: 4px; }
+    .privacy { margin-left: auto; color: var(--muted); font-size: 12px; }
+    .status { min-height: 1.5em; margin: 14px 0 0; font-size: 13px; color: var(--muted); }
+    .status.error { color: #a0312d; }
+    [hidden] { display: none !important; }
+    .results { margin-top: 28px; }
+    .results h2 { font-size: 20px; margin: 0 0 7px; letter-spacing: -.02em; }
+    .results h2:focus { outline: none; }
+    .result-help { margin: 0 0 17px; color: var(--muted); font-size: 14px; }
+    .link-list { display: grid; gap: 12px; }
+    .link-card { padding: 18px 20px; border: 1px solid #cdded1; border-radius: 12px; background: #f7faf4; }
+    .link-label { margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+    .operation-link { display: inline-block; color: var(--green); font-size: 20px; font-weight: 700; text-decoration-thickness: 1px; text-underline-offset: 5px; overflow-wrap: anywhere; }
+    .right-click { display: inline-block; margin-left: 12px; color: var(--muted); font-size: 12px; }
+    .url-details { margin-top: 12px; font-size: 12px; }
+    summary { cursor: pointer; color: var(--muted); }
+    code { display: block; margin-top: 8px; padding: 10px; background: #fff; color: #4b5c52; border-radius: 6px; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 12px; line-height: 1.6; }
+    .verify { margin: 18px 0 0; padding: 14px 17px; border-left: 3px solid #89ae91; background: #edf3e9; font-size: 14px; }
+    .notes { margin-top: 24px; padding: 0 4px; }
+    .notes > details { border-bottom: 1px solid var(--line); padding: 14px 0; }
+    .notes > details > summary { color: var(--ink); font-size: 14px; font-weight: 600; }
+    .notes p { margin: 12px 0 0; font-size: 13px; color: var(--muted); }
+    footer { display: flex; justify-content: space-between; gap: 14px; margin-top: 24px; color: #778277; font-size: 12px; }
+    noscript p { padding: 16px; background: #fff1d8; border-radius: 10px; }
+    @media (max-width: 650px) {
+      main { width: calc(100% - 28px); margin-top: 28px; }
+      .steps { grid-template-columns: 1fr; gap: 13px; }
+      .panel { padding: 20px; }
+      .browser { display: block; }
+      .browser strong { display: block; margin-bottom: 4px; }
+      .actions { flex-wrap: wrap; }
+      .privacy { flex-basis: 100%; margin-left: 0; }
+      footer { display: block; }
+      footer span { display: block; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">小红书链接修复 · 内置离线助手</div>
+    <h1>恢复链接的浏览器打开方式</h1>
+    <p class="intro">遇到网页链接总被 App 接管？把链接粘贴到这里，再通过 Safari 的右键菜单选择打开方式。</p>
+  </header>
+
+  <div class="browser" id="browser-note" role="status">
+    <strong id="browser-title">请用 Safari 打开本文件</strong>
+    <span id="browser-detail">从软件点击“恢复浏览器打开…”后，本页会自动使用 Safari 打开。</span>
+  </div>
+
+  <div class="steps" aria-label="操作步骤">
+    <div class="step"><span class="number">1</span><div><strong>粘贴完整链接</strong><p>可以粘贴多条链接，或包含链接的分享文案。</p></div></div>
+    <div class="step"><span class="number">2</span><div><strong>在生成的链接上右键</strong><p>选择 Safari 菜单最上方的“打开链接”。</p></div></div>
+    <div class="step"><span class="number">3</span><div><strong>回原应用点击验证</strong><p>检查普通点击是否进入你设定的默认浏览器。</p></div></div>
+  </div>
+
+  <noscript><p>请允许 Safari 运行 JavaScript，才能从输入内容生成操作链接。</p></noscript>
+  <section class="panel" aria-label="生成操作链接">
+    <form id="link-form">
+      <label for="shared-text">需要调整打开方式的链接</label>
+      <p class="hint" id="input-hint">支持 http / https；会保留查询参数，例如小红书分享链接中的 xsec_token。</p>
+      <textarea id="shared-text" aria-describedby="input-hint status" placeholder="把被小红书 App 接管的完整链接粘贴到这里……&#10;&#10;支持一行一个链接，也支持直接粘贴分享文案。" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+      <div class="actions">
+        <button type="submit">生成操作链接</button>
+        <button type="button" class="secondary" id="clear-button">清空</button>
+        <span class="privacy">本页不上传、不保存输入内容</span>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite">粘贴链接后，点击“生成操作链接”。</p>
+    </form>
+
+    <section class="results" id="results" aria-labelledby="result-heading" hidden>
+      <h2 id="result-heading" tabindex="-1">在下方链接上右键</h2>
+      <p class="result-help">在 Safari 中选择最上方的<strong>“打开链接”</strong>，网页打开后回原应用验证。</p>
+      <div class="link-list" id="link-list"></div>
+      <p class="verify"><strong>完成后验证：</strong>回到备忘录、文档或原来的聊天窗口，普通点击同一链接。若仍进入 App，说明这台 Mac 没有记住选择。</p>
+    </section>
+  </section>
+
+  <section class="notes" aria-label="使用说明">
+    <details>
+      <summary>怎样拿到其他 Mac 上使用？</summary>
+      <p>把这个 HTML 文件通过隔空投送、U 盘或文件传输发到另一台 Mac。保存到本机后，在访达中右键文件 →“打开方式”→“Safari 浏览器”。粘贴那台 Mac 上需要处理的链接，按上面的三步操作即可。无需安装软件，也不依赖原电脑的文件路径。</p>
+      <p>每台 Mac 都要分别操作；传送页面不会传送本机的系统偏好。平时使用的默认浏览器可在“系统设置 → 桌面与程序坞 → 默认网页浏览器”中确认。</p>
+    </details>
+    <details>
+      <summary>小红书短链和长链接要分别处理吗？</summary>
+      <p>可能需要。www.xiaohongshu.com、xhslink.com 等域名可能有各自的关联。请使用实际遇到问题的完整链接；如果短链最终跳转到其他域名，后者也可能需要单独操作。本页会列出每条链接的域名，便于检查。</p>
+    </details>
+    <details>
+      <summary>没有“打开链接”，或操作后仍然跳 App？</summary>
+      <p>先确认当前用的是 macOS 上的 Safari，并且右键的是生成后的绿色链接。若菜单没有对应选项，或操作后仍跳 App，可以临时把完整链接复制到默认浏览器的地址栏打开。</p>
+      <p>这是操作辅助页，页面本身不会直接修改系统设置。选择能否被记住取决于 macOS 版本和应用。此前已在一台 macOS 26.6.2 的小红书长链接上验证 Safari 菜单方法；其他 Mac、重启后的状态和其他域名尚未实测。</p>
+    </details>
+  </section>
+  <footer><span>无需账号 · 无外部资源 · 无后台服务</span><span>网页链接打开助手 / 1.0</span></footer>
+</main>
+
+<script id="link-parser">
+function parseSharedLinks(input) {
+  const candidates = [];
+  for (const line of String(input).split(/\r?\n/)) {
+    for (const raw of line.match(/https?:\/\/[^\s<>"“”‘’]+/gi) || []) {
+      candidates.push({ raw, wholeLine: line.trim() === raw });
+    }
+  }
+  const links = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    let raw = candidate.raw;
+    raw = raw.replace(/\\([&_*~])/g, '$1').replace(/&amp;/gi, '&');
+    let previous;
+    do {
+      previous = raw;
+      if (!candidate.wholeLine) {
+        raw = raw.replace(/[，。；、！：….,;!]+$/u, '');
+        for (const [open, close] of [['(', ')'], ['[', ']'], ['{', '}'], ['（', '）'], ['【', '】']]) {
+          const openCount = raw.split(open).length - 1;
+          const closeCount = raw.split(close).length - 1;
+          if (raw.endsWith(close) && closeCount > openCount) raw = raw.slice(0, -1);
+        }
+      }
+    } while (raw !== previous);
+    try {
+      const url = new URL(raw);
+      if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) continue;
+      if (seen.has(url.href)) continue;
+      seen.add(url.href);
+      links.push({ href: raw, hostname: url.hostname, path: url.pathname });
+    } catch (_) { /* Invalid candidates are ignored; an empty result is explained by the UI. */ }
+  }
+  return links;
+}
+</script>
+<script>
+(function () {
+  'use strict';
+  const form = document.getElementById('link-form');
+  const input = document.getElementById('shared-text');
+  const status = document.getElementById('status');
+  const results = document.getElementById('results');
+  const list = document.getElementById('link-list');
+  const userAgent = navigator.userAgent;
+  const isMacSafari = /Macintosh/.test(userAgent) && /Safari\//.test(userAgent) && /Version\//.test(userAgent) && !/Chrome|Chromium|CriOS|Edg|OPR|FxiOS|Firefox|DuckDuckGo|GSA/.test(userAgent);
+  if (isMacSafari) {
+    document.getElementById('browser-title').textContent = '当前浏览器：Safari';
+    document.getElementById('browser-detail').textContent = '生成链接后，在绿色链接上右键，选择“打开链接”。';
+  } else {
+    document.getElementById('browser-note').classList.add('attention');
+    document.getElementById('browser-title').textContent = '操作时请切换到 Safari';
+  }
+
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    const links = parseSharedLinks(input.value);
+    list.replaceChildren();
+    if (!links.length) {
+      results.hidden = true;
+      input.setAttribute('aria-invalid', 'true');
+      status.classList.add('error');
+      status.textContent = '没有找到有效网页链接，请粘贴以 https:// 或 http:// 开头的完整链接。';
+      input.focus();
+      return;
+    }
+    input.removeAttribute('aria-invalid');
+    status.classList.remove('error');
+    const domainCount = new Set(links.map(link => link.hostname)).size;
+    status.textContent = `已生成 ${links.length} 个链接，涉及 ${domainCount} 个域名。重复链接已合并。`;
+    links.forEach(function (link, index) {
+      const card = document.createElement('article');
+      card.className = 'link-card';
+      const label = document.createElement('div');
+      label.className = 'link-label';
+      label.textContent = `链接 ${String(index + 1).padStart(2, '0')}`;
+      const anchor = document.createElement('a');
+      anchor.className = 'operation-link';
+      anchor.href = link.href;
+      anchor.textContent = link.hostname;
+      anchor.title = link.href;
+      anchor.setAttribute('aria-label', `链接 ${index + 1}：${link.hostname}，请右键选择打开链接`);
+      const cue = document.createElement('span');
+      cue.className = 'right-click';
+      cue.textContent = '← 在这里右键';
+      const detail = document.createElement('details');
+      detail.className = 'url-details';
+      const summary = document.createElement('summary');
+      summary.textContent = '查看完整链接';
+      const code = document.createElement('code');
+      code.textContent = link.href;
+      detail.append(summary, code);
+      card.append(label, anchor, cue, detail);
+      list.append(card);
+    });
+    results.hidden = false;
+    document.getElementById('result-heading').focus({ preventScroll: true });
+    results.scrollIntoView({ block: 'nearest' });
+  });
+
+  document.getElementById('clear-button').addEventListener('click', function () {
+    input.value = '';
+    input.removeAttribute('aria-invalid');
+    list.replaceChildren();
+    results.hidden = true;
+    status.classList.remove('error');
+    status.textContent = '已清空。可以粘贴新的链接。';
+    input.focus();
+  });
+})();
+</script>
+</body>
+</html>
