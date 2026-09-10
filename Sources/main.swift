@@ -117,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var stopButton: NSButton!
     private var folderButton: NSButton!
     private var historyButton: NSButton!
+    private var browserHelperButton: NSButton!
     private var folderLabel: NSTextField!
     private var excelButton: NSButton!
     private var coordinateCheckbox: NSButton!
@@ -222,6 +223,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let outputTitle = label("转换结果", size: 13, weight: .medium)
         outputTitle.frame = NSRect(x: 28, y: 238, width: 180, height: 20)
         content.addSubview(outputTitle)
+
+        browserHelperButton = NSButton(title: "恢复浏览器打开…", target: self, action: #selector(openBrowserHelper))
+        browserHelperButton.frame = NSRect(x: 220, y: 232, width: 172, height: 30)
+        browserHelperButton.toolTip = "在 Safari 中完成打开方式选择，再回原应用验证链接"
+        content.addSubview(browserHelperButton)
 
         historyButton = NSButton(title: "查看历史记录", target: self, action: #selector(showHistory))
         historyButton.frame = NSRect(x: 402, y: 232, width: 140, height: 30)
@@ -349,6 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopButton.isEnabled = true
         folderButton.isEnabled = false
         historyButton.isEnabled = false
+        browserHelperButton.isEnabled = false
         excelButton.isEnabled = false
         lastExcelURL = nil
         statusLabel.textColor = .secondaryLabelColor
@@ -456,6 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let failures = outcomes.count - successes.count - deleted - pending
         folderButton.isEnabled = true
         historyButton.isEnabled = true
+        browserHelperButton.isEnabled = true
 
         var excelError: Error?
         if !outcomes.isEmpty {
@@ -606,6 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runButton.isEnabled = false
         folderButton.isEnabled = false
         historyButton.isEnabled = false
+        browserHelperButton.isEnabled = false
         updateTask = Task { @MainActor [weak self] in
             guard let self else { return }
             var prepared: PreparedAppUpdate?
@@ -634,6 +643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.runButton.isEnabled = true
                 self.folderButton.isEnabled = true
                 self.historyButton.isEnabled = true
+                self.browserHelperButton.isEnabled = true
                 self.showUpdateError("更新未完成", error: error)
             }
         }
@@ -647,6 +657,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "打开发布页")
         alert.beginSheetModal(for: window) { response in
             if response == .alertSecondButtonReturn { _ = NSWorkspace.shared.open(AppUpdater.releasePage) }
+        }
+    }
+
+    @objc private func openBrowserHelper() {
+        guard !batchRunning, !installingUpdate else { return }
+        guard let page = Bundle.main.url(forResource: "BrowserLinkHelper", withExtension: "html"),
+              let safari = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari") else {
+            let alert = NSAlert()
+            alert.messageText = "无法打开浏览器助手"
+            alert.informativeText = "请确认 Safari 已安装且应用资源完整。"
+            alert.beginSheetModal(for: window)
+            return
+        }
+        NSWorkspace.shared.open([page], withApplicationAt: safari, configuration: NSWorkspace.OpenConfiguration()) {
+            [weak self] _, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let error {
+                    let alert = NSAlert()
+                    alert.messageText = "无法打开 Safari 助手"
+                    alert.informativeText = error.localizedDescription
+                    alert.beginSheetModal(for: self.window)
+                } else {
+                    self.statusLabel.stringValue = "已打开 Safari 助手，请按页面提示操作后验证原链接"
+                    self.statusLabel.textColor = .secondaryLabelColor
+                }
+            }
         }
     }
 
