@@ -52,9 +52,24 @@ enum RepairError: LocalizedError, Equatable {
     }
 }
 
+enum ShareButtonTarget {
+    static func contains(_ button: CGRect, in window: CGRect) -> Bool {
+        guard button.width >= 10, button.height >= 10 else { return false }
+        let center = CGPoint(x: button.midX, y: button.midY)
+        return window.contains(center)
+            && center.x >= window.maxX - min(90, window.width * 0.15)
+            && center.y >= window.minY + 32
+            && center.y <= window.minY + min(110, window.height * 0.20)
+    }
+
+    static func fallbackPoint(in window: CGRect) -> CGPoint {
+        // 分享按钮距窗口右侧和标题栏的距离固定；窗口高度变化不应改变点击高度。
+        CGPoint(x: window.maxX - 34, y: window.minY + 65)
+    }
+}
+
 final class AutomationRunner {
     private let xiaohongshuBundleID = "com.xingin.discover"
-    private let sharePointRatio = CGPoint(x: 0.968, y: 0.078)
     private let copyPointRatio = CGPoint(x: 0.786, y: 0.380)
 
     private var isRunning = false
@@ -141,9 +156,9 @@ final class AutomationRunner {
             do {
                 try waitForNotePage(in: app.processIdentifier)
                 postStatus("正在点击右上角的分享按钮…", handler: onStatus)
-                var sharePressed = pressElement(in: app.processIdentifier, containingAny: ["分享", "share"])
+                var sharePressed = pressShareButton(in: app.processIdentifier)
                 if !sharePressed && useCoordinateFallback {
-                    sharePressed = clickWindowPoint(for: app.processIdentifier, ratio: sharePointRatio)
+                    sharePressed = clickSharePoint(for: app.processIdentifier)
                 }
                 guard sharePressed else { throw RepairError.shareButtonNotFound }
 
@@ -334,6 +349,36 @@ final class AutomationRunner {
         return false
     }
 
+    private func pressShareButton(in pid: pid_t) -> Bool {
+        guard navigationSnapshot(in: pid).isNoteCandidate,
+              let window = currentWindow(in: pid),
+              let frame = frontWindowFrame(for: pid) else { return false }
+        var queue = [window]
+        var index = 0
+        var rightmost: (element: AXUIElement, x: CGFloat)?
+        var named: (element: AXUIElement, x: CGFloat)?
+        while index < queue.count && index < 250 {
+            let element = queue[index]
+            index += 1
+            if attributeString(element, kAXRoleAttribute as CFString) == kAXButtonRole as String,
+               let rect = accessibilityRect(for: element),
+               ShareButtonTarget.contains(rect, in: frame) {
+                let labels = accessibilityStrings(for: element).map { $0.lowercased() }
+                if !labels.contains(where: { $0.contains("关注") || $0 == "follow" }) {
+                    if labels.contains(where: { $0 == "分享" || $0 == "share" }) {
+                        if named == nil || rect.midX > named!.x { named = (element, rect.midX) }
+                    } else if rightmost == nil || rect.midX > rightmost!.x {
+                        rightmost = (element, rect.midX)
+                    }
+                }
+            }
+            queue.append(contentsOf: attributeElements(element, kAXChildrenAttribute as CFString))
+        }
+        if let named, press(named.element) { return true }
+        if let rightmost { return press(rightmost.element) }
+        return false
+    }
+
     private func waitForApplication(timeout: TimeInterval) -> NSRunningApplication? {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
@@ -422,6 +467,11 @@ final class AutomationRunner {
             y: frame.minY + frame.height * ratio.y
         )
         return click(at: point)
+    }
+
+    private func clickSharePoint(for pid: pid_t) -> Bool {
+        guard let frame = frontWindowFrame(for: pid) else { return false }
+        return click(at: ShareButtonTarget.fallbackPoint(in: frame))
     }
 
     private func click(at point: CGPoint) -> Bool {

@@ -23,6 +23,18 @@ func runAutomationSafetyTests() -> Bool {
     check(NavigationSnapshot(labels: ["返回", "分享"]).isNoteCandidate, "有标签的笔记仍可识别")
     check(!NavigationSnapshot(labels: ["标签页栏", "返回"]).isHome, "后台标签页不能证明已返回首页")
 
+    let compactWindow = CGRect(x: 0, y: 0, width: 780, height: 668)
+    let tallWindow = CGRect(x: -900, y: 40, width: 780, height: 1_100)
+    check(ShareButtonTarget.contains(CGRect(x: 730, y: 50, width: 32, height: 30), in: compactWindow),
+          "当前小窗口的右上角按钮应被识别")
+    check(ShareButtonTarget.contains(CGRect(x: -170, y: 90, width: 32, height: 30), in: tallWindow),
+          "改变窗口高度和显示器位置后仍应识别右上角按钮")
+    check(!ShareButtonTarget.contains(CGRect(x: 730, y: 350, width: 32, height: 30), in: compactWindow),
+          "不能把右侧正文按钮当作分享")
+    check(ShareButtonTarget.fallbackPoint(in: compactWindow) == CGPoint(x: 746, y: 65)
+          && ShareButtonTarget.fallbackPoint(in: tallWindow) == CGPoint(x: -154, y: 105),
+          "无标签时按右上角固定边距点击，不随窗口高度漂移")
+
     // 关键回归：退出失效页后，旧计时器仍在 3 秒时将首页切到作者主页。
     var time: TimeInterval = 0
     var page = deleted
