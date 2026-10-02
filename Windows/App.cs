@@ -29,7 +29,7 @@ namespace XhsRepair {
         List<Row> rows = new List<Row>(); CancellationTokenSource cancellation; bool busy;
         string outputPath = "", smokeInput, smokeOutput;
         public MainForm(string[] args) {
-            Text="小红书链接修复 · Windows / MuMu 0.1.0"; Size=new Size(1120,780); MinimumSize=new Size(850,650);
+            Text="小红书链接修复 · Windows / MuMu 0.5.13"; Size=new Size(1120,780); MinimumSize=new Size(850,650);
             Font=new Font("Microsoft YaHei UI",10); StartPosition=FormStartPosition.CenterScreen;
             grid.ColumnHeadersHeightSizeMode=DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
             grid.ColumnHeadersHeight=34;grid.RowTemplate.Height=30;

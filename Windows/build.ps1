@@ -8,5 +8,5 @@ if ($LASTEXITCODE -ne 0) { throw '编译失败' }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot '使用说明.txt') -Destination $out
 $test = Start-Process -FilePath (Join-Path $out '小红书链接修复.exe') -ArgumentList @('--self-test', ('"' + (Join-Path $out 'self-test.txt') + '"')) -WindowStyle Hidden -Wait -PassThru
 if ($test.ExitCode -ne 0) { throw '自检失败，请查看 dist 中的 self-test.txt' }
-Compress-Archive -Path "$out\*" -DestinationPath (Join-Path $repo 'dist\XHSLinkRepair-0.1.0-Windows-x64.zip') -Force
+Compress-Archive -Path "$out\*" -DestinationPath (Join-Path $repo 'dist\XHSLinkRepair-0.5.13-windows-x64.zip') -Force
 Write-Output "已生成：$out"

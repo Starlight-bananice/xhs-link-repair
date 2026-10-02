@@ -67,7 +67,7 @@ namespace XhsRepair {
                 var b = new UriBuilder(current) { Scheme = "https", Port = -1 };
                 var req = (HttpWebRequest)WebRequest.Create(b.Uri);
                 req.AllowAutoRedirect = false; req.Timeout = 12000; req.ReadWriteTimeout = 12000;
-                req.UserAgent = "Mozilla/5.0 XHSLinkRepairWindows/0.1";
+                req.UserAgent = "Mozilla/5.0 XHSLinkRepairWindows/0.5.13";
                 using (cancel.Register(req.Abort)) {
                     try {
                         using (var response = (HttpWebResponse)req.GetResponse()) {
