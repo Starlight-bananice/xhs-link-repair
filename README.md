@@ -1,5 +1,24 @@
 # 小红书链接修复工具 0.5.12
 
+## Windows / MuMu 预览版
+
+`Windows/` 提供独立 WinForms 程序，通过本机 MuMu 的 ADB 打开安卓版小红书，点击分享和复制链接，再展开官方短链核对笔记 ID 与 `xsec_token`。Mac 实现保持独立。
+
+[下载 Windows x64 预览版](https://github.com/Starlight-bananice/xhs-link-repair/releases/tag/windows-v0.1.0)
+
+- 打开 MuMu 和已登录的安卓版小红书，再运行 `小红书链接修复.exe`。支持自动检测设备，多个设备时手动选择。
+- 支持混合粘贴笔记长链接、官方短链、分享文案及 24 位 ID，或导入 TXT；按笔记去重，已有签名也会重新分享。
+- 每条结果自动保存到“文档\小红书链接修复结果”的 `.xlsx`，包括原始输入、ID、状态、新链接、说明和时间；支持停止、另存 Excel、复制选中结果。
+- 使用安卓控件信息定位，不使用固定屏幕坐标。MuMu 需开启剪贴板同步；运行时不要操作模拟器或复制其他内容。
+- 分享 ID 不符、登录/验证提示或剪贴板未同步会停止批次；短链展开失败保留为“待核验”，不冒充成功或已删除。
+- 当前为 Windows x64 预览版，依赖 .NET Framework 4.8；没有自动更新、历史恢复或 Excel 输入导入功能。Windows 预发布包不替换 macOS 最新正式版。
+
+在 Windows PowerShell 中执行 `./Windows/build.ps1`，生成 `dist/XHSLinkRepair-Windows/小红书链接修复.exe` 和 ZIP；无需 Python、Office 或额外 NuGet 依赖。脚本执行输入/签名/控件/Excel 自检。
+
+2026-10-02 已在本机 MuMu + 安卓小红书 9.31.2 上用编译后的程序完成两条真实笔记的自动重新分享，导出结果均通过 ID 和 token 核验。未验证浏览器最终展示、其他模拟器或所有小红书版本。真实测试链接和结果不提交仓库。
+
+以下说明仍针对 macOS 版本。
+
 将小红书短链、长链接或笔记 ID 批量交给已登录的 iPad 版小红书重新分享，生成带 `xsec_token` 的网页链接，并自动导出 Excel。适合整理缺少分享参数、无法直接在浏览器打开的笔记链接。
 
 [下载最新版 App](https://github.com/Starlight-bananice/xhs-link-repair/releases/latest)
